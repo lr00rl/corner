@@ -45,6 +45,7 @@ import Corner.Types
   , CornerT(..)
   , Route
   )
+import Corner.WebSocket (WebSocketRoute, wsApp)
 
 -- | 默认路由集，附带简单的 OpenAPI 文档。
 defaultRoutes :: [Route]
@@ -121,9 +122,11 @@ app env routes req respond = do
       respond resp
 
 -- | 启动服务器在指定端口。
-startServer :: Int -> [Route] -> IO ()
-startServer port routes = do
+startServer :: Int -> [WebSocketRoute] -> [Route] -> IO ()
+startServer port wsRoutes routes = do
   let env = Env { envLogger = putStrLn }
-      application = catchErrorMiddleware (logMiddleware (envLogger env) (app env routes))
+      httpApp     = app env routes
+      wsApp'      = wsApp wsRoutes httpApp
+      application = catchErrorMiddleware (logMiddleware (envLogger env) wsApp')
   putStrLn $ "Corner server listening on http://localhost:" ++ show port
   run port application

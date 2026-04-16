@@ -9,6 +9,10 @@ import Network.HTTP.Types (methodGet)
 import qualified Data.Aeson as Aeson
 import Data.Maybe (fromMaybe)
 import qualified Data.ByteString.Base64 as Base64
+import qualified Data.Text as T
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay, killThread)
+import Network.Wai.Handler.Warp (run)
+import Network.WebSockets (runClient, sendTextData, receiveData)
 import Corner.Server (app, defaultRoutes)
 import Corner.Context (queryParam)
 import Corner.Json (json)
@@ -16,13 +20,19 @@ import Corner.Middleware (catchErrorMiddleware)
 import Corner.OpenApi (withSwagger)
 import Corner.Auth (protectJwt, requireAuth)
 import qualified Corner.RouteBuilder as RB
+import qualified Corner.WebSocket as WS
 import Corner.Types (Env(..), Context(..), Route, Handler)
 
 main :: IO ()
 main = hspec spec
 
 spec :: Spec
-spec = with (return testApp) $ do
+spec = do
+  httpSpec
+  wsSpec
+
+httpSpec :: Spec
+httpSpec = with (return testApp) $ do
   describe "GET /" $ do
     it "returns welcome message" $ do
       get "/" `shouldRespondWith` 200
@@ -97,9 +107,22 @@ spec = with (return testApp) $ do
       get "/swagger.json" `shouldRespondWith` 200
         { matchHeaders = ["Content-Type" <:> "application/json"] }
 
+  describe "WebSocket fallback" $ do
+    it "falls back to HTTP when no WebSocket upgrade header is present" $ do
+      get "/ws/echo" `shouldRespondWith` 404
+
   describe "404" $ do
     it "returns not found for unknown paths" $ do
       get "/unknown" `shouldRespondWith` 404
+
+wsSpec :: Spec
+wsSpec = describe "WebSocket" $ do
+  it "echoes text messages over WebSocket" $ do
+    withAppOnPort 9999 testApp $ do
+      runClient "127.0.0.1" 9999 "/ws/echo" $ \conn -> do
+        sendTextData conn ("hello" :: T.Text)
+        msg <- receiveData conn
+        msg `shouldBe` ("hello" :: T.Text)
 
 handleProtected :: Handler
 handleProtected = requireAuth $ \ctx ->
@@ -121,4 +144,18 @@ testRoutes =
   ]
 
 testApp :: Application
-testApp = catchErrorMiddleware (app (Env { envLogger = \_ -> return () }) (withSwagger testRoutes))
+testApp =
+  let httpApp = app (Env { envLogger = \_ -> return () }) (withSwagger testRoutes)
+  in catchErrorMiddleware (WS.wsApp [WS.ws "/ws/echo" WS.echoHandler] httpApp)
+
+withAppOnPort :: Int -> Application -> IO a -> IO a
+withAppOnPort port application action = do
+  ready <- newEmptyMVar
+  tid <- forkIO $ do
+    putMVar ready ()
+    run port application
+  takeMVar ready
+  threadDelay 20000
+  result <- action
+  killThread tid
+  return result
