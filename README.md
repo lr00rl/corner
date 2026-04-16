@@ -1,6 +1,6 @@
 # Corner
 
-> A lightweight Haskell HTTP server built on **WAI / Warp**, featuring a hand-written router, `ReaderT`-based handlers, JSON support via **aeson**, and pluggable middleware.
+> A lightweight Haskell HTTP server built on **WAI / Warp**, featuring a hand-written router, `ReaderT`-based handlers, JSON support via **aeson**, pluggable middleware, **JWT/Basic Auth**, and **OpenAPI 3** document generation.
 
 ---
 
@@ -10,7 +10,7 @@
 # Build
 cabal build
 
-# Run tests (10 examples)
+# Run tests (17 examples)
 cabal test
 
 # Start server on default port 3000
@@ -22,13 +22,16 @@ cabal run corner -- 8080
 
 ## 📡 API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Welcome message |
-| GET | `/health` | Health check |
-| GET | `/hello/:name` | Greeting with dynamic path parameter |
-| POST | `/echo` | Echo a valid JSON request body |
-| GET | `/api/v1/status` | Example of scoped route group |
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| GET | `/` | Welcome message | None |
+| GET | `/health` | Health check | None |
+| GET | `/hello/:name` | Greeting with dynamic path parameter | None |
+| POST | `/echo` | Echo a valid JSON request body | None |
+| GET | `/protected/basic` | Basic Auth protected resource | Basic Auth |
+| GET | `/protected/jwt` | JWT protected resource | Bearer JWT |
+| GET | `/api/v1/status` | Example of scoped route group | None |
+| GET | `/swagger.json` | OpenAPI 3 JSON specification | None |
 
 ### Example Requests
 
@@ -53,9 +56,20 @@ curl -X POST -d '{"msg":"hello"}' http://localhost:3000/echo
 curl -X POST -d 'not-json' http://localhost:3000/echo
 # => {"error":"..."}
 
+# Basic Auth (admin / secret)
+curl -u admin:secret http://localhost:3000/protected/basic
+# => {"message":"This is protected","user":"admin"}
+
+# JWT Auth — you need a valid HMAC-SHA256 token with sub claim
+# Example using a mock verifier in tests; in production use verifyHmacJwt
+
 # Scoped route
 curl http://localhost:3000/api/v1/status
 # => {"api":"v1"}
+
+# Swagger / OpenAPI JSON
+curl http://localhost:3000/swagger.json
+# => { "openapi": "3.0.0", "info": { "title": "Corner API", ... } }
 
 # Wrong method returns 405
 curl -X POST http://localhost:3000/health
@@ -76,8 +90,10 @@ curl -X POST http://localhost:3000/health
 │   ├── Types.hs           # Env, CornerT (ReaderT), Context, Route
 │   ├── Context.hs         # Path param / query param helpers
 │   ├── Json.hs            # json response helpers & body parsing
+│   ├── Auth.hs            # Basic Auth & JWT middleware (jose)
+│   ├── OpenApi.hs         # OpenAPI 3 document builder (openapi3)
 │   ├── Router.hs          # Hand-written path + method router (405 aware)
-│   ├── RouteBuilder.hs    # get/post/put/delete/scope DSL
+│   ├── RouteBuilder.hs    # get/post/put/delete/scope/document/withMiddleware DSL
 │   ├── Middleware.hs      # Logging & exception-catching middleware
 │   └── Server.hs          # WAI Application & Warp runner
 └── test/
@@ -114,25 +130,44 @@ handleEcho ctx = do
 
 No more hand-written JSON strings.
 
-### 3. Route DSL & Scoping
+### 3. Per-Route Middleware
+
+Middleware can be attached to individual routes:
 
 ```haskell
-apiRoutes :: [Route]
-apiRoutes =
-  scope "/api/v1"
-    [ get "/status"  handleStatus
-    , post "/users" handleCreateUser
-    ]
+withMiddleware
+  (get "/protected/basic" handleProtected)
+  (protectBasic basicVerify)
 ```
 
-### 4. Middleware Stack
+Available middleware:
+- `protectBasic :: (String -> String -> IO Bool) -> Middleware`
+- `protectJwt :: (ByteString -> IO (Maybe String)) -> Middleware`
+- `logMiddleware :: (String -> IO ()) -> Middleware`
+- `catchErrorMiddleware :: Middleware`
 
-`startServer` automatically mounts:
+Authentication results are passed through WAI Vault and available in `ctxUser :: Maybe String`.
 
-- **Log Middleware** — prints method, path, status code, and duration.
-- **Catch-Error Middleware** — catches unhandled exceptions and returns a safe `500` JSON response.
+### 4. JWT Verification with jose
 
-### 5. 405 Method Not Allowed
+`verifyHmacJwt` uses the industrial-strength `jose` library to verify HMAC-SHA256 tokens and extract the `sub` claim:
+
+```haskell
+jwtMiddleware = protectJwt (verifyHmacJwt "corner-secret")
+```
+
+### 5. OpenAPI 3 / Swagger
+
+Routes can carry `Operation` metadata:
+
+```haskell
+documentRoute (get "/health" handleHealth)
+  (mempty & summary ?~ "Health check")
+```
+
+`withSwagger` appends a `/swagger.json` endpoint that aggregates all route docs into a valid OpenAPI 3 specification.
+
+### 6. 405 Method Not Allowed
 
 If a path matches but the HTTP method does not, the router returns `405` instead of `404`.
 

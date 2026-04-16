@@ -5,6 +5,7 @@ module Main where
 import System.Environment (getArgs)
 import qualified Data.Aeson as Aeson
 import Corner.Json (json)
+import Corner.OpenApi (withSwagger)
 import Corner.RouteBuilder (get, scope)
 import Corner.Server (startServer, defaultRoutes)
 import Corner.Types (Route)
@@ -27,4 +28,4 @@ main = do
   let port = case args of
                (p:_) -> read p
                _     -> 3000
-  startServer port allRoutes
+  startServer port (withSwagger allRoutes)

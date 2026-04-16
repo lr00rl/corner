@@ -16,6 +16,7 @@ module Corner.Types
 
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (ReaderT, MonadReader)
+import Data.OpenApi (Operation)
 import Network.Wai (Application, Request, Response)
 
 -- | 应用环境，可扩展配置、日志函数、连接池等。
@@ -37,16 +38,19 @@ newtype CornerT a = CornerT
 data Context = Context
   { ctxRequest :: Request
   , ctxParams  :: [(String, String)]
+  , ctxUser    :: Maybe String
   }
 
 -- | 处理函数类型：接收请求上下文，运行在 CornerT 中，返回 Response。
 type Handler = Context -> CornerT Response
 
--- | 路由类型。
+-- | 路由类型，支持附加中间件和 OpenAPI 文档。
 data Route = Route
-  { routePattern :: String
-  , routeMethod  :: String
-  , routeHandler :: Handler
+  { routePattern    :: String
+  , routeMethod     :: String
+  , routeHandler    :: Handler
+  , routeMiddleware :: [Middleware]
+  , routeDoc        :: Maybe Operation
   } deriving ()
 
 -- | 中间件类型：WAI Application 的变换器。

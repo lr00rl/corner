@@ -14,18 +14,18 @@ module Corner.Router
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import Network.Wai (Request, pathInfo, requestMethod)
-import Corner.Types (Handler, Route(..))
+import Corner.Types (Handler, Middleware, Route(..))
 
 -- | 路由匹配结果。
 data RouteMatch
-  = Matched Handler [(String, String)]
+  = Matched Handler [(String, String)] [Middleware]
   | MethodNotAllowed
   | NoMatch
 
 instance Show RouteMatch where
-  show (Matched _ params) = "Matched <handler> " ++ show params
-  show MethodNotAllowed   = "MethodNotAllowed"
-  show NoMatch            = "NoMatch"
+  show (Matched _ params _) = "Matched <handler> " ++ show params
+  show MethodNotAllowed     = "MethodNotAllowed"
+  show NoMatch              = "NoMatch"
 
 -- | 将 WAI 的 pathInfo 转换为以 / 分隔的字符串。
 pathInfoString :: Request -> String
@@ -75,7 +75,7 @@ matchRoute routes req =
     go (route:rest) meth path best =
       case matchPath (routePattern route) path of
         Just params
-          | routeMethod route == meth -> Matched (routeHandler route) params
+          | routeMethod route == meth -> Matched (routeHandler route) params (routeMiddleware route)
           | otherwise                 -> go rest meth path (prefer best MethodNotAllowed)
         Nothing                       -> go rest meth path best
 

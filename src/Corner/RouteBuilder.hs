@@ -11,25 +11,36 @@ module Corner.RouteBuilder
   , put
   , delete
   , scope
+  , documentRoute
+  , withMiddleware
   ) where
 
-import Corner.Types (Route(..), Handler)
+import Data.OpenApi (Operation)
+import Corner.Types (Route(..), Handler, Middleware)
 
 -- | 构造 GET 路由。
 get :: String -> Handler -> Route
-get path handler = Route path "GET" handler
+get path handler = Route path "GET" handler [] Nothing
 
 -- | 构造 POST 路由。
 post :: String -> Handler -> Route
-post path handler = Route path "POST" handler
+post path handler = Route path "POST" handler [] Nothing
 
 -- | 构造 PUT 路由。
 put :: String -> Handler -> Route
-put path handler = Route path "PUT" handler
+put path handler = Route path "PUT" handler [] Nothing
 
 -- | 构造 DELETE 路由。
 delete :: String -> Handler -> Route
-delete path handler = Route path "DELETE" handler
+delete path handler = Route path "DELETE" handler [] Nothing
+
+-- | 为路由附加 OpenAPI 文档。
+documentRoute :: Route -> Operation -> Route
+documentRoute route op = route { routeDoc = Just op }
+
+-- | 为路由附加中间件。
+withMiddleware :: Route -> Middleware -> Route
+withMiddleware route mw = route { routeMiddleware = mw : routeMiddleware route }
 
 -- | 为子路由统一添加前缀。
 scope :: String -> [Route] -> [Route]
