@@ -2,6 +2,7 @@
 模块：Corner.Server
 
 将 Corner 的路由封装为 WAI Application，并通过 Warp 启动服务。
+默认挂载日志与异常捕获中间件。
 -}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -11,79 +12,80 @@ module Corner.Server
   , defaultRoutes
   ) where
 
-import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.Lazy.Char8 as BLC
-import qualified Data.ByteString.Char8 as BC
-import qualified Data.Text as T
-import Network.HTTP.Types (Status, status200, status404)
+import Control.Monad.Reader (runReaderT)
+
 import Network.Wai
   ( Application
   , Response
-  , pathInfo
-  , responseLBS
-  , strictRequestBody
+  , requestMethod
   )
 import Network.Wai.Handler.Warp (run)
-import Corner.Types (Handler, Route)
-import Corner.Router (matchRoute, pathInfoString)
+import Corner.Context (pathParam)
+import Corner.Json (json, parseBody, badRequest, notFound, methodNotAllowed)
+import Corner.Middleware (logMiddleware, catchErrorMiddleware)
+import Corner.Router (RouteMatch(..), matchRoute, pathInfoString)
+import Corner.RouteBuilder (get, post)
+import Corner.Types
+  ( Env(..)
+  , Context(..)
+  , CornerT(..)
+  , Route
+  )
+import qualified Data.Aeson as Aeson
+import qualified Data.Text as T
 
--- | 默认路由集：包含健康检查、问候、回显等示例端点。
+-- | 默认路由集。
 defaultRoutes :: [Route]
 defaultRoutes =
-  [ ("/",          "GET",  handleWelcome)
-  , ("/health",    "GET",  handleHealth)
-  , ("/hello/:name", "GET", handleHello)
-  , ("/echo",      "POST", handleEcho)
+  [ get "/"           handleWelcome
+  , get "/health"     handleHealth
+  , get "/hello/:name" handleHello
+  , post "/echo"      handleEcho
   ]
 
 -- | 欢迎页。
-handleWelcome :: Handler
+handleWelcome :: Context -> CornerT Response
 handleWelcome _ =
-  jsonResponse status200 "{\"message\":\"Welcome to Corner!\"}"
+  json (Aeson.object ["message" Aeson..= ("Welcome to Corner!" :: T.Text)])
 
 -- | 健康检查。
-handleHealth :: Handler
+handleHealth :: Context -> CornerT Response
 handleHealth _ =
-  jsonResponse status200 "{\"status\":\"ok\"}"
+  json (Aeson.object ["status" Aeson..= ("ok" :: T.Text)])
 
 -- | 动态问候：从路由参数中提取 :name。
--- 注意：这里为了简化，不传递参数，而是通过再次解析 pathInfo 获取 name。
--- 生产代码中应将参数注入 Handler 上下文。
-handleHello :: Handler
-handleHello req =
-  let segs = map T.unpack (pathInfo req)
-      name = if length segs >= 2 then segs !! 1 else "stranger"
-      body = BLC.pack $ "{\"message\":\"Hello, " ++ escapeJson name ++ "!\"}"
-  in jsonResponse status200 body
-  where
-    escapeJson [] = []
-    escapeJson ('"':xs) = '\\' : '"' : escapeJson xs
-    escapeJson ('\\':xs) = '\\' : '\\' : escapeJson xs
-    escapeJson (x:xs)   = x : escapeJson xs
+handleHello :: Context -> CornerT Response
+handleHello ctx =
+  let name = maybe "stranger" id (Corner.Context.pathParam ctx "name")
+  in json (Aeson.object ["message" Aeson..= T.pack ("Hello, " ++ name ++ "!")])
 
 -- | 回显 POST 请求体。
-handleEcho :: Handler
-handleEcho req = do
-  body <- strictRequestBody req
-  let quoted = BLC.pack $ show $ BC.unpack $ BLC.toStrict body
-  jsonResponse status200 $ "{\"echo\":" <> quoted <> "}"
-
--- | 辅助函数：返回 JSON 格式的 Response。
-jsonResponse :: Status -> ByteString -> IO Response
-jsonResponse st body =
-  return $ responseLBS st [("Content-Type", "application/json")] body
+handleEcho :: Context -> CornerT Response
+handleEcho ctx = do
+  result <- parseBody ctx
+  case result of
+    Left err -> badRequest err
+    Right val -> json (Aeson.object ["echo" Aeson..= (val :: Aeson.Value)])
 
 -- | 构建 WAI Application。
-app :: [Route] -> Application
-app routes req respond = do
+app :: Env -> [Route] -> Application
+app env routes req respond = do
   case matchRoute routes req of
-    Just (handler, _params) -> handler req >>= respond
-    Nothing ->
-      respond $ responseLBS status404 [("Content-Type", "application/json")]
-             $ "{\"error\":\"Not Found\",\"path\":" <> BLC.pack (show (pathInfoString req)) <> "}"
+    Matched handler params -> do
+      let ctx = Context req params
+      resp <- runReaderT (runCornerT (handler ctx)) env
+      respond resp
+    MethodNotAllowed -> do
+      resp <- runReaderT (runCornerT (methodNotAllowed (show (Network.Wai.requestMethod req)) (pathInfoString req))) env
+      respond resp
+    NoMatch -> do
+      resp <- runReaderT (runCornerT (notFound (pathInfoString req))) env
+      respond resp
 
 -- | 启动服务器在指定端口。
 startServer :: Int -> [Route] -> IO ()
 startServer port routes = do
+  let env = Env { envLogger = putStrLn }
+      application = catchErrorMiddleware (logMiddleware (envLogger env) (app env routes))
   putStrLn $ "Corner server listening on http://localhost:" ++ show port
-  run port (app routes)
+  run port application

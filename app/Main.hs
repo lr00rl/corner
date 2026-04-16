@@ -1,7 +1,25 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import System.Environment (getArgs)
+import qualified Data.Aeson as Aeson
+import Corner.Json (json)
+import Corner.RouteBuilder (get, scope)
 import Corner.Server (startServer, defaultRoutes)
+import Corner.Types (Route)
+
+-- | 示例：在默认路由之上添加自定义路由分组。
+allRoutes :: [Route]
+allRoutes = defaultRoutes ++ apiRoutes
+
+-- | API v1 路由组。
+apiRoutes :: [Route]
+apiRoutes =
+  scope "/api/v1"
+    [ get "/status" $ \_ctx ->
+        json (Aeson.object ["api" Aeson..= ("v1" :: String)])
+    ]
 
 main :: IO ()
 main = do
@@ -9,4 +27,4 @@ main = do
   let port = case args of
                (p:_) -> read p
                _     -> 3000
-  startServer port defaultRoutes
+  startServer port allRoutes

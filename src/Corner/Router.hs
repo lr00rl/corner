@@ -1,26 +1,33 @@
 {-|
 模块：Corner.Router
 
-一个简单的手写 HTTP 路由器。
-
-支持：
-  - 精确路径匹配（如 /health）
-  - 参数路径匹配（如 /hello/:name）
-  - HTTP 方法过滤（GET、POST 等）
+一个手写 HTTP 路由器，支持精确路径、参数路径、405 方法不匹配检测。
 -}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Corner.Router
-  ( matchRoute
+  ( RouteMatch(..)
+  , matchRoute
   , pathInfoString
   ) where
 
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import Network.Wai (Request, pathInfo, requestMethod)
-import Corner.Types (Handler, Route)
+import Corner.Types (Handler, Route(..))
 
--- | 将 WAI 的 pathInfo ([Text]) 转换为以 / 分隔的字符串。
+-- | 路由匹配结果。
+data RouteMatch
+  = Matched Handler [(String, String)]
+  | MethodNotAllowed
+  | NoMatch
+
+instance Show RouteMatch where
+  show (Matched _ params) = "Matched <handler> " ++ show params
+  show MethodNotAllowed   = "MethodNotAllowed"
+  show NoMatch            = "NoMatch"
+
+-- | 将 WAI 的 pathInfo 转换为以 / 分隔的字符串。
 pathInfoString :: Request -> String
 pathInfoString req =
   let segs = map T.unpack (pathInfo req)
@@ -57,15 +64,20 @@ matchPath template actual =
     isParam (':':_) = True
     isParam _       = False
 
--- | 在路由列表中查找匹配的处理函数。
-matchRoute :: [Route] -> Request -> Maybe (Handler, [(String, String)])
+-- | 在路由列表中查找匹配。
+matchRoute :: [Route] -> Request -> RouteMatch
 matchRoute routes req =
-  let actualPath = pathInfoString req
+  let actualPath   = pathInfoString req
       actualMethod = methodString req
-  in go routes actualMethod actualPath
+  in go routes actualMethod actualPath NoMatch
   where
-    go [] _ _ = Nothing
-    go ((tmpl, mthd, hndlr):rest) meth path =
-      case matchPath tmpl path of
-        Just params | mthd == meth -> Just (hndlr, params)
-        _                          -> go rest meth path
+    go [] _ _ best = best
+    go (route:rest) meth path best =
+      case matchPath (routePattern route) path of
+        Just params
+          | routeMethod route == meth -> Matched (routeHandler route) params
+          | otherwise                 -> go rest meth path (prefer best MethodNotAllowed)
+        Nothing                       -> go rest meth path best
+
+    prefer NoMatch x = x
+    prefer x _       = x

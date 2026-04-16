@@ -1,6 +1,6 @@
 # Corner
 
-> A lightweight Haskell HTTP server built on **WAI / Warp**, with a hand-written router.
+> A lightweight Haskell HTTP server built on **WAI / Warp**, featuring a hand-written router, `ReaderT`-based handlers, JSON support via **aeson**, and pluggable middleware.
 
 ---
 
@@ -10,7 +10,7 @@
 # Build
 cabal build
 
-# Run tests
+# Run tests (10 examples)
 cabal test
 
 # Start server on default port 3000
@@ -26,8 +26,9 @@ cabal run corner -- 8080
 |--------|------|-------------|
 | GET | `/` | Welcome message |
 | GET | `/health` | Health check |
-| GET | `/hello/:name` | Greeting with dynamic parameter |
-| POST | `/echo` | Echo request body |
+| GET | `/hello/:name` | Greeting with dynamic path parameter |
+| POST | `/echo` | Echo a valid JSON request body |
+| GET | `/api/v1/status` | Example of scoped route group |
 
 ### Example Requests
 
@@ -44,9 +45,21 @@ curl http://localhost:3000/health
 curl http://localhost:3000/hello/Haskell
 # => {"message":"Hello, Haskell!"}
 
-# Echo
-curl -X POST -d 'hello world' http://localhost:3000/echo
-# => {"echo":"hello world"}
+# Echo JSON
+curl -X POST -d '{"msg":"hello"}' http://localhost:3000/echo
+# => {"echo":{"msg":"hello"}}
+
+# Invalid JSON returns 400
+curl -X POST -d 'not-json' http://localhost:3000/echo
+# => {"error":"..."}
+
+# Scoped route
+curl http://localhost:3000/api/v1/status
+# => {"api":"v1"}
+
+# Wrong method returns 405
+curl -X POST http://localhost:3000/health
+# => {"error":"Method Not Allowed","method":"POST","path":"/health"}
 ```
 
 ---
@@ -60,27 +73,68 @@ curl -X POST -d 'hello world' http://localhost:3000/echo
 ├── app/
 │   └── Main.hs            # Server entry point
 ├── src/Corner/
-│   ├── Types.hs           # Core type aliases
-│   ├── Router.hs          # Hand-written path + method router
+│   ├── Types.hs           # Env, CornerT (ReaderT), Context, Route
+│   ├── Context.hs         # Path param / query param helpers
+│   ├── Json.hs            # json response helpers & body parsing
+│   ├── Router.hs          # Hand-written path + method router (405 aware)
+│   ├── RouteBuilder.hs    # get/post/put/delete/scope DSL
+│   ├── Middleware.hs      # Logging & exception-catching middleware
 │   └── Server.hs          # WAI Application & Warp runner
 └── test/
-    └── Spec.hs            # Hspec + wai-extra tests
+    └── Spec.hs            # Hspec + hspec-wai tests
 ```
 
 ---
 
-## 🧠 Design Goals
+## 🧠 Design Highlights
 
-- **Minimal dependencies**: only `warp`, `wai`, `http-types`
-- **Hand-written router**: no heavy web framework, easy to understand
-- **Testable**: uses `hspec-wai` for in-memory HTTP testing
+### 1. CornerT — ReaderT for Handlers
 
----
+Instead of plain `Request -> IO Response`, handlers run in `CornerT`:
 
-## 📚 Resources
+```haskell
+type Handler = Context -> CornerT Response
 
-- [WAI Documentation](https://hackage.haskell.org/package/wai)
-- [Warp Documentation](https://hackage.haskell.org/package/warp)
+newtype CornerT a = CornerT { runCornerT :: ReaderT Env IO a }
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader Env)
+```
+
+This lets handlers access shared environment (logger, config, DB pool) without threading arguments manually.
+
+### 2. JSON via Aeson
+
+```haskell
+handleEcho :: Handler
+handleEcho ctx = do
+  result <- parseBody ctx
+  case result of
+    Left err  -> badRequest err
+    Right val -> json (Aeson.object ["echo" Aeson..= (val :: Aeson.Value)])
+```
+
+No more hand-written JSON strings.
+
+### 3. Route DSL & Scoping
+
+```haskell
+apiRoutes :: [Route]
+apiRoutes =
+  scope "/api/v1"
+    [ get "/status"  handleStatus
+    , post "/users" handleCreateUser
+    ]
+```
+
+### 4. Middleware Stack
+
+`startServer` automatically mounts:
+
+- **Log Middleware** — prints method, path, status code, and duration.
+- **Catch-Error Middleware** — catches unhandled exceptions and returns a safe `500` JSON response.
+
+### 5. 405 Method Not Allowed
+
+If a path matches but the HTTP method does not, the router returns `405` instead of `404`.
 
 ---
 
